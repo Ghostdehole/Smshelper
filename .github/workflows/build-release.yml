@@ -1,0 +1,105 @@
+name: Build Release APKs
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '请输入版本号 (例如: 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+jobs:
+  build:
+    name: Build & Sign APKs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17' 
+
+      - name: 配置 Gradle 缓存
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: 赋予 gradlew 执行权限
+        run: chmod +x ./gradlew
+
+      - name: 编译 Release APK (未签名)
+        run: ./gradlew assembleRelease
+
+      - name: 获取 Android apksigner 工具路径
+        run: |
+          BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools"
+          # 找出本地安装的最新版 build-tools
+          LATEST_VERSION=$(ls -1 "$BUILD_TOOLS_DIR" | sort -V | tail -n 1)
+          echo "APKSIGNER=$BUILD_TOOLS_DIR/$LATEST_VERSION/apksigner" >> $GITHUB_ENV
+
+      - name: 签名并按目标格式重命名 APK
+        env:
+          # 从 GitHub Secrets 读取加密的环境变量
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # 1. 还原 Base64 为二进制 Keystore 文件 (过滤掉可能的换行符以防万一)
+          echo "$KEYSTORE_BASE64" | tr -d '\n\r' | base64 --decode > my-release-key.jks
+          
+          # 2. 确定版本号
+          if[ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          
+          mkdir -p final-apks
+          
+          # 3. 遍历生成的 Release APK，进行重命名和签名
+          find app/build/outputs/apk/release -name "*.apk" | while read filepath; do
+            filename=$(basename "$filepath")
+            
+            if [[ $filename == *"armeabi-v7a"* ]]; then ABI="armeabi-v7a"
+            elif [[ $filename == *"arm64-v8a"* ]]; then ABI="arm64-v8a"
+            elif [[ $filename == *"x86_64"* ]]; then ABI="x86_64"
+            elif [[ $filename == *"x86"* ]]; then ABI="x86"
+            else ABI="universal"; fi
+            
+            new_name="Smshelper-${VERSION}-${ABI}-release.apk"
+            final_path="final-apks/$new_name"
+            
+            # 复制并改名
+            cp "$filepath" "$final_path"
+            
+            # 关键步骤：使用 apksigner 进行签名
+            $APKSIGNER sign --ks my-release-key.jks \
+              --ks-key-alias "$KEY_ALIAS" \
+              --ks-pass "pass:$KEYSTORE_PASSWORD" \
+              --key-pass "pass:$KEY_PASSWORD" \
+              "$final_path"
+              
+            echo "已成功签名并生成: $new_name"
+          done
+          
+          # 4. 删除临时的 Keystore 文件，防止泄漏
+          rm my-release-key.jks
+
+      - name: 上传 APK 作为产物 (Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smshelper-Release-APKs
+          path: final-apks/*.apk
+
+      - name: 自动创建 GitHub Release 发版 (仅限 Tag 触发)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: final-apks/*.apk
+          generate_release_notes: true

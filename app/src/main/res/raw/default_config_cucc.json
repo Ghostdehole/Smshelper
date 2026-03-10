@@ -1,0 +1,90 @@
+{
+  "carriers": [
+    {
+      "identifier": "CUCC",
+      "name": "中国联通",
+      "targetNumber": "10010",
+      "syncCommands": [
+        "101", "102"
+      ],
+      "regexRules": {
+		"balance": "账户余额[为是]?([0-9.]+)元",
+		"consumption": "当月共?消费([0-9.]+)元",
+		"usedData": "已使用移动数据流量([0-9.A-Za-z]+)",
+		"remainingData": "套餐剩余流量([0-9.A-Za-z]+)",
+		"generalData": "国内通用流量剩余[：:]([0-9.A-Za-z]+)",
+		"voiceInclude": "包含语音([0-9]+)分钟",
+		"voiceRemain": "剩余([0-9]+)分钟",
+		"bill": "([0-9]{4}年[0-9]{1,2}月)[：:]消费([0-9.]+)元"
+	  },
+      "categories": [
+        {
+          "title": "💰 话费与账单查询",
+          "commands": [
+            { "code": "101", "name": "查当月话费（汇总）" },
+            { "code": "102", "name": "查实时余额及当月账单明细" },
+            { "code": "103", "name": "查上月完整账单" },
+            { "code": "104", "name": "查历史账单（需指定月份）" },
+            { "code": "CXYE", "name": "查询可用余额（拼音码）" },
+            { "code": "YE", "name": "查询余额（简写版）" },
+            { "code": "105", "name": "查询缴费记录" },
+            { "code": "MX202601", "name": "查询指定月份详单（示例为2026年1月，月份可替换）[citation:6]" }
+          ]
+        },
+        {
+          "title": "📊 流量与套餐余量",
+          "commands": [
+            { "code": "CXLL", "name": "查当前剩余流量（最常用）[citation:4]" },
+            { "code": "107", "name": "查手机上网流量（基础版）" },
+            { "code": "1071", "name": "查手机上网流量（详细版，含闲时/定向）" },
+            { "code": "TCYLMX", "name": "查套餐余量明细（语音+流量+短信）" },
+            { "code": "TCYL", "name": "查套餐详情（含名称、资费、生效/到期时间）[citation:4]" },
+            { "code": "LLCX", "name": "查当月流量使用记录（明细）[citation:4]" },
+            { "code": "412", "name": "查短信/流量包月量等详细信息" }
+          ]
+        },
+        {
+          "title": "🎁 积分与增值业务",
+          "commands": [
+            { "code": "402", "name": "查当前可用积分" },
+            { "code": "108", "name": "查积分产生记录" },
+            { "code": "106", "name": "查积分消费记录" },
+            { "code": "0000", "name": "查已订增值业务（退订指引）" },
+            { "code": "TCXZ", "name": "查询/办理套餐续订" }
+          ]
+        },
+        {
+          "title": "⚡ 流量加油包全家桶",
+          "commands": [
+            { "code": "528", "name": "5元加油包（1天，约100MB-500MB）[citation:1]" },
+            { "code": "529", "name": "10元加油包（3天，约1GB）[citation:1]" },
+            { "code": "530", "name": "20元加油包（有效期以当地为准）[citation:1]" },
+            { "code": "531", "name": "30元加油包（7天，大流量）[citation:1]" },
+            { "code": "532", "name": "50元加油包（长期外出适用）[citation:1]" },
+            { "code": "DGXSLL", "name": "开通闲时流量包（5元1GB/10元3GB，23:00-7:00）[citation:5]" },
+            { "code": "DGJYB10", "name": "开通10元100MB流量加油包（当月可重复订购）[citation:5]" },
+            { "code": "KTDXLL30", "name": "开通30元档通用流量包（具体档位可替换）" }
+          ]
+        },
+        {
+          "title": "🌍 国际业务与安全防护",
+          "commands": [
+            { "code": "KTGJMY", "name": "开通国际漫游" },
+            { "code": "GBGJLH", "name": "关闭境外来电（反诈利器）[citation:3]" },
+            { "code": "LJDXJB#被举报号码#举报内容", "name": "举报垃圾短信（需自行补充内容）" },
+            { "code": "338", "name": "查询国际漫游状态及资费" }
+          ]
+        },
+        {
+          "title": "🛠️ 实用工具与高级设置",
+          "commands": [
+            { "code": "CXGSD#手机号码", "name": "查询手机号码归属地" },
+            { "code": "HZ#呼转号码", "name": "设置无条件呼叫转移（如 HZ#13800138000）" },
+            { "code": "QXHZ", "name": "取消全部呼叫转移" },
+            { "code": "GBJC#业务编码", "name": "关闭指定基础业务（如来来显示，需先查0000获编码）" }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "carriers": [
+    {
+      "identifier": "CBN",
+      "name": "中国广电",
+      "targetNumber": "10099",
+      "syncCommands": [
+        "CXLL", "YE", "HF"
+      ],
+      "regexRules": {
+        "balance": "账户余额[为是]?([0-9.]+)元",
+        "consumption": "当月共?消费([0-9.]+)元",
+        "usedData": "已使用移动数据流量([0-9.A-Za-z]+)",
+        "remainingData": "套餐剩余流量([0-9.A-Za-z]+)",
+        "generalData": "国内通用流量剩余[：:]([0-9.A-Za-z]+)",
+        "voiceInclude": "包含语音([0-9]+)分钟",
+        "voiceRemain": "剩余([0-9]+)分钟",
+        "bill": "([0-9]{4}年[0-9]{1,2}月)[：:]消费([0-9.]+)元"
+      },
+      "categories": [
+        {
+          "title": "📱 话费与账单查询",
+          "commands": [
+            { "code": "YE", "name": "查询账户余额" },
+            { "code": "HF", "name": "查询话费（备选指令）" },
+            { "code": "108", "name": "查询上月账单" },
+            { "code": "109", "name": "查询当月账单明细" }
+          ]
+        },
+        {
+          "title": "📊 流量与套餐余量",
+          "commands": [
+            { "code": "CXLL", "name": "查询剩余流量（最常用）" },
+            { "code": "1071", "name": "查询通用流量余量" },
+            { "code": "1072", "name": "查询定向流量余量" },
+            { "code": "1073", "name": "查询夜间流量余量" },
+            { "code": "TCYL", "name": "查询套餐余量（语音+流量）" }
+          ]
+        },
+        {
+          "title": "🎁 积分与增值业务",
+          "commands": [
+            { "code": "402", "name": "查询当前积分" },
+            { "code": "403", "name": "查询积分明细" },
+            { "code": "0000", "name": "查询已订增值业务" },
+            { "code": "0001", "name": "查询已订基础业务" }
+          ]
+        },
+        {
+          "title": "🛡️ 安全防护与业务办理",
+          "commands": [
+            { "code": "KTGLLJ", "name": "开通境外来电拦截（防诈骗）" },
+            { "code": "QXGLLJ", "name": "取消境外来电拦截" },
+            { "code": "KTGDLJ", "name": "开通境外短信拦截" },
+            { "code": "QXGDLJ", "name": "取消境外短信拦截" },
+            { "code": "KTLL10", "name": "开通10元流量包（具体档位可替换）" },
+            { "code": "KTLL20", "name": "开通20元流量包" },
+            { "code": "KTLL30", "name": "开通30元流量包" }
+          ]
+        }
+      ]
+    }
+  ]
+}

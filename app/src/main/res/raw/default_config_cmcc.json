@@ -1,0 +1,73 @@
+{
+  "carriers": [
+    {
+      "identifier": "CMCC",
+      "name": "中国移动",
+      "targetNumber": "10086",
+      "syncCommands": ["1011", "112", "114"],
+      "regexRules": {
+        "balance": "账户余额[为是]?([0-9.]+)元",
+        "consumption": "当月共?消费([0-9.]+)元",
+        "usedData": "已使用移动数据流量([0-9.A-Za-z]+)",
+        "remainingData": "套餐剩余流量([0-9.A-Za-z]+)",
+        "generalData": "国内通用流量剩余[：:]([0-9.A-Za-z]+)",
+        "voiceInclude": "包含语音([0-9]+)分钟",
+        "voiceRemain": "剩余([0-9]+)分钟",
+        "bill": "([0-9]{4}年[0-9]{1,2}月)[：:]消费([0-9.]+)元"
+      },
+      "categories": [
+        {
+          "title": "🔍 常用查询",
+          "commands": [
+            { "code": "103", "name": "查流量" },
+            { "code": "111", "name": "本月话费详情" },
+            { "code": "112", "name": "上网流量详情" },
+            { "code": "113", "name": "已开通收费业务" },
+            { "code": "114", "name": "查询往月话费" },
+            { "code": "1011", "name": "实时话费" },
+            { "code": "1034", "name": "流量明细" },
+            { "code": "1131", "name": "在用资费套餐" },
+            { "code": "1132", "name": "包月业务" },
+            { "code": "1133", "name": "已参加活动" },
+            { "code": "6021", "name": "号码归属地" },
+            { "code": "6023", "name": "入网时间" },
+            { "code": "CXQGQQW", "name": "查询亲情网" },
+            { "code": "119", "name": "查询信用等级" },
+            { "code": "6", "name": "已开通业务" }
+          ]
+        },
+        {
+          "title": "🚀 流量办理",
+          "commands": [
+            { "code": "6675", "name": "10元10G夜间" },
+            { "code": "6636", "name": "3元1G日包" },
+            { "code": "6691", "name": "日包5GB版" },
+            { "code": "6694", "name": "小时包3GB版" },
+            { "code": "82900", "name": "9元3G加速" },
+            { "code": "82901", "name": "5元1G加速" },
+            { "code": "KT5GSJB", "name": "5G升级包" }
+          ]
+        },
+        {
+          "title": "🛡️ 业务与防护",
+          "commands": [
+            { "code": "0000", "name": "退订业务" },
+            { "code": "KTFSR", "name": "开通防骚扰" },
+            { "code": "30501", "name": "关超套提醒短信" },
+            { "code": "GBLLTXLHJT", "name": "关超套提醒电话" },
+            { "code": "ZTSJLL", "name": "暂停数据流量" },
+            { "code": "HFSJLL", "name": "恢复数据流量" }
+          ]
+        },
+        {
+          "title": "⚙️ 高级参数指令",
+          "commands": [
+            { "code": "1011#", "name": "实时话费(年月)", "requiresInput": true, "inputHint": "如: 202601" },
+            { "code": "6012#", "name": "重置密码", "requiresInput": true, "inputHint": "证件号码" },
+            { "code": "tzxy", "name": "调整透支额", "requiresInput": true, "inputHint": "金额" }
+          ]
+        }
+      ]
+    }
+  ]
+}

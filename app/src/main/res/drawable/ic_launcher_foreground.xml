@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:pivotX="54"
+        android:pivotY="53"
+        android:scaleX="0.9"
+        android:scaleY="0.9">
+
+        <!-- 幽灵主体 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,20 C38,20 28,34 28,52 C28,74 20,86 28,86 C32,86 36,80 41,80 C46,80 49,86 54,86 C59,86 62,80 67,80 C72,80 76,86 80,86 C88,86 80,74 80,52 C80,34 70,20 54,20 Z" />
+
+        <!-- 幽灵左眼 -->
+        <path
+            android:fillColor="#2D3436"
+            android:pathData="M43,45 m-4,0 a4,4 0,1 1,8 0 a4,4 0,1 1,-8 0" />
+
+        <!-- 幽灵右眼 -->
+        <path
+            android:fillColor="#2D3436"
+            android:pathData="M65,45 m-4,0 a4,4 0,1 1,8 0 a4,4 0,1 1,-8 0" />
+
+        <!-- 手里抱着的小信封 (短信) -->
+        <path
+            android:fillColor="#FFEAA7"
+            android:pathData="M38,60 L70,60 L70,78 L38,78 Z" />
+
+        <!-- 信封折痕线（补偿缩放后的线宽） -->
+        <path
+            android:strokeColor="#FF9800"
+            android:strokeWidth="2.22"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M38,60 L54,70 L70,60" />
+    </group>
+</vector>

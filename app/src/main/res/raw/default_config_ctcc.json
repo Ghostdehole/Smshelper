@@ -1,0 +1,67 @@
+{
+  "carriers": [
+    {
+      "identifier": "CTCC",
+      "name": "中国电信",
+      "targetNumber": "10001",
+      "syncCommands": ["101", "102"],
+      "regexRules": {
+		"balance": "账户余额[为是]?([0-9.]+)元",
+		"consumption": "当月共?消费([0-9.]+)元",
+		"usedData": "已使用移动数据流量([0-9.A-Za-z]+)",
+		"remainingData": "套餐剩余流量([0-9.A-Za-z]+)",
+		"generalData": "国内通用流量剩余[：:]([0-9.A-Za-z]+)",
+		"voiceInclude": "包含语音([0-9]+)分钟",
+		"voiceRemain": "剩余([0-9]+)分钟",
+		"bill": "([0-9]{4}年[0-9]{1,2}月)[：:]消费([0-9.]+)元"
+	  },
+      "categories": [
+        {
+          "title": "话费与账单查询",
+          "commands": [
+            { "code": "101", "name": "查询当月话费" },
+            { "code": "102", "name": "查询账户实时余额" },
+            { "code": "103", "name": "查询上月账单" },
+            { "code": "HF", "name": "查询话费余额（YE 或 102 的备选）" },
+            { "code": "CXHF", "name": "查询账户余额（拼音码）" }
+          ]
+        },
+        {
+          "title": "流量与套餐余量",
+          "commands": [
+            { "code": "108", "name": "查询套餐通用余量（流量+语音）" },
+            { "code": "1081", "name": "查询本月全部流量详情" },
+            { "code": "3535", "name": "查询已使用流量明细" },
+            { "code": "CXLL", "name": "查询当前剩余流量（拼音码）" },
+            { "code": "109", "name": "查询套餐到期时间" },
+            { "code": "112", "name": "查询套餐详细信息" },
+            { "code": "CXSLL", "name": "查询套餐剩余流量" },
+            { "code": "CXTC", "name": "查询套餐剩余通话时长" }
+          ]
+        },
+        {
+          "title": "积分与增值业务",
+          "commands": [
+            { "code": "402", "name": "查询当前积分" },
+            { "code": "CXJF", "name": "查询积分（拼音码）" },
+            { "code": "0000", "name": "查询已订增值业务" },
+            { "code": "338", "name": "查询国际漫游状态及资费" }
+          ]
+        },
+        {
+          "title": "业务办理与安全防护",
+          "commands": [
+            { "code": "339", "name": "开通国际及港澳台漫游" },
+            { "code": "KTVOLTE", "name": "开通 VoLTE 高清通话" },
+            { "code": "KTLL5", "name": "办理 5 元 30M 流量包" },
+            { "code": "KTLL10", "name": "办理 10 元 60M 流量包" },
+            { "code": "KTLL20", "name": "办理 20 元 150M 流量包" },
+            { "code": "KTLL30", "name": "办理 30 元 300M 流量包" },
+            { "code": "GBGJLH", "name": "关闭境外来电（防诈骗）" },
+            { "code": "GBGJDX", "name": "关闭境外短信（防诈骗）" }
+          ]
+        }
+      ]
+    }
+  ]
+}
