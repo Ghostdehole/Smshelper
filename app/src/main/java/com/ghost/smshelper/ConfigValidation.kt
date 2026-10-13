@@ -157,6 +157,7 @@ internal class ConfigCatalog {
     val profiles = linkedMapOf<String, ConfigProfile>()
     val selections = linkedMapOf<String, CarrierSelection>()
     val subscriptions = linkedMapOf<String, Subscription>()
+    val revisions = mutableListOf<RuleRevision>()
 
     fun selected(identifier: String): CarrierConfig? = selections[identifier]?.config
 
@@ -186,6 +187,7 @@ internal class ConfigCatalog {
 
     fun removeProfile(id: String): Boolean {
         val profile = profiles.remove(id) ?: return false
+        revisions.removeAll { it.profileId == id }
         selections.entries.removeAll { it.value.profileId == id }
         profile.carriers.forEach { carrier ->
             if (selections[carrier.identifier] == null) profiles.values.firstOrNull { candidate -> candidate.carriers.any { it.identifier == carrier.identifier } }
@@ -222,5 +224,6 @@ internal class ConfigCatalog {
         copy.selections.putAll(selections)
         // All transitions replace Subscription instances; retain identities for in-flight downloads.
         copy.subscriptions.putAll(subscriptions)
+        copy.revisions.addAll(revisions)
     }
 }

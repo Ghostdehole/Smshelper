@@ -91,7 +91,7 @@ jobs:
   release:
     name: Sign Release APKs
     needs: verify
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    if: (github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/heads/preview/')) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
