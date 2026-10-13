@@ -21,6 +21,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -36,17 +37,22 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
+    val haptic = actionHaptics()
     val pagerState = rememberPagerState(pageCount = { 2 })
     val coroutineScope = rememberCoroutineScope()
 
@@ -57,15 +63,15 @@ fun SettingsScreen(onBack: () -> Unit) {
             Column {
                 TopAppBar(
                     title = { Text("助手设置", fontWeight = FontWeight.Black, color = Color.Black) },
-                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } },
+                    navigationIcon = { HapticIconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
                 )
                 TabRow(
                     selectedTabIndex = pagerState.currentPage, containerColor = Color.Transparent,
                     indicator = { tabPositions -> if (pagerState.currentPage < tabPositions.size) TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[pagerState.currentPage]), color = Color.Black) }
                 ) {
-                    Tab(selected = pagerState.currentPage == 0, onClick = { coroutineScope.launch { pagerState.animateScrollToPage(0) } }, text = { Text("基础常规", fontWeight = FontWeight.Bold) })
-                    Tab(selected = pagerState.currentPage == 1, onClick = { coroutineScope.launch { pagerState.animateScrollToPage(1) } }, text = { Text("规则中心", fontWeight = FontWeight.Bold) })
+                    Tab(selected = pagerState.currentPage == 0, onClick = { haptic(HapticEvent.Tap); coroutineScope.launch { pagerState.animateScrollToPage(0) } }, text = { Text("基础常规", fontWeight = FontWeight.Bold) })
+                    Tab(selected = pagerState.currentPage == 1, onClick = { haptic(HapticEvent.Tap); coroutineScope.launch { pagerState.animateScrollToPage(1) } }, text = { Text("规则中心", fontWeight = FontWeight.Bold) })
                 }
             }
         },
@@ -84,17 +90,19 @@ fun GeneralSettingsTab(context: Context, onBack: () -> Unit) {
     val interceptAll = remember { mutableStateOf(prefs.getBoolean("intercept_all_sms", false)) }
     var expandedTheme by remember { mutableStateOf(false) }
 
-    var profiles by remember { mutableStateOf(ConfigManager.getAllProfiles().toList()) }
-    var selections by remember { mutableStateOf(ConfigManager.getSelections().toMap()) }
+    val profiles by ConfigManager.profilesFlow.collectAsState()
+    val selections by ConfigManager.selectionsFlow.collectAsState()
+    val haptic = actionHaptics()
+    val coroutineScope = rememberCoroutineScope()
     var expandedOperator by remember { mutableStateOf<String?>(null) }
     val showExportWarning = remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        uri?.let {
+        if (uri != null) coroutineScope.launch {
             try {
-                context.contentResolver.openOutputStream(it)?.use { out ->
-                    val data = SmsRepository.messages.value.joinToString("\n\n") { msg -> "[SMS]\nSender: ${msg.sender}\nTime: ${msg.time}\nBody: ${msg.body}\n[END]" }
-                    out.write(data.toByteArray())
+                val snapshot = SmsRepository.messages.value
+                withContext(Dispatchers.IO) {
+                    requireNotNull(context.contentResolver.openOutputStream(uri)).bufferedWriter(Charsets.UTF_8).use { it.write(TxtBackup.encode(snapshot)) }
                 }
                 Toast.makeText(context, "导出成功", Toast.LENGTH_SHORT).show()
             } catch (_: Exception) { Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show() }
@@ -102,21 +110,14 @@ fun GeneralSettingsTab(context: Context, onBack: () -> Unit) {
     }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let {
+        if (uri != null) coroutineScope.launch {
             try {
-                val txt = context.contentResolver.openInputStream(it)?.bufferedReader()?.use { reader -> reader.readText() } ?: ""
-                val blocks = txt.split("[SMS]").filter { b -> b.contains("[END]") }
-                var count = 0
-                val newList = SmsRepository.messages.value.toMutableList()
-                blocks.forEach { block ->
-                    val sender = "Sender: (.*)".toRegex().find(block)?.groupValues?.get(1)?.trim() ?: ""
-                    val time = "Time: (.*)".toRegex().find(block)?.groupValues?.get(1)?.trim() ?: ""
-                    val body = "Body: ([\\s\\S]*?)\\[END]".toRegex().find(block)?.groupValues?.get(1)?.trim() ?: ""
-                    if (sender.isNotBlank() && body.isNotBlank()) { newList.add(SmsItem(sender, body, time)); count++ }
+                val imported = withContext(Dispatchers.IO) {
+                    val txt = requireNotNull(context.contentResolver.openInputStream(uri)).use { readUtf8Text(it, 32 * 1024 * 1024) }
+                    TxtBackup.decode(txt)
                 }
-                SmsRepository.messages.value = newList.distinctBy { msg -> msg.time + msg.body }.sortedByDescending { msg -> msg.time }
-                SmsRepository.addMessage(context, "系统", "导入了 $count 条短信")
-                Toast.makeText(context, "成功导入记录", Toast.LENGTH_SHORT).show()
+                val count = withContext(Dispatchers.IO) { SmsRepository.importMessages(context, imported) }
+                Toast.makeText(context, "成功导入 $count 条，归入未分卡历史，不覆盖当前SIM用量", Toast.LENGTH_LONG).show()
             } catch (_: Exception) { Toast.makeText(context, "导入失败或格式错误", Toast.LENGTH_SHORT).show() }
         }
     }
@@ -139,11 +140,11 @@ fun GeneralSettingsTab(context: Context, onBack: () -> Unit) {
                                 Text(displayName, modifier = Modifier.weight(0.2f), fontWeight = FontWeight.Bold, fontSize = 14.sp)
                                 Text(currentName, modifier = Modifier.weight(0.6f), color = Color.Gray, fontSize = 14.sp, maxLines = 1)
                                 Box {
-                                    IconButton(onClick = { expandedOperator = id }) { Icon(Icons.Default.Edit, contentDescription = "选择", tint = MaterialTheme.colorScheme.primary) }
+                                    HapticIconButton(onClick = { expandedOperator = id }) { Icon(Icons.Default.Edit, contentDescription = "选择", tint = MaterialTheme.colorScheme.primary) }
                                     DropdownMenu(expanded = expandedOperator == id, onDismissRequest = { expandedOperator = null }) {
-                                        if (profiles.isEmpty()) DropdownMenuItem(text = { Text("无可用规则") }, onClick = { expandedOperator = null })
-                                        else profiles.forEach { profile ->
-                                            DropdownMenuItem(text = { Text(profile.name) }, onClick = { ConfigManager.selectProfileForCarrier(context, id, profile.id); selections = ConfigManager.getSelections().toMap(); expandedOperator = null })
+                                        if (profiles.none { profile -> profile.carriers.any { it.identifier == id } }) DropdownMenuItem(text = { Text("无可用规则") }, onClick = { expandedOperator = null })
+                                        else profiles.filter { profile -> profile.carriers.any { it.identifier == id } }.forEach { profile ->
+                                            DropdownMenuItem(text = { Text(profile.name) }, onClick = { haptic(HapticEvent.Tap); ConfigManager.selectProfileForCarrier(context, id, profile.id); expandedOperator = null })
                                         }
                                     }
                                 }
@@ -163,24 +164,24 @@ fun GeneralSettingsTab(context: Context, onBack: () -> Unit) {
                             Text("系统短信兼容模式", fontSize = 14.sp, fontWeight = FontWeight.Bold)
                             Text("唤起系统App发短信，防拦截", fontSize = 11.sp, color = Color.Gray)
                         }
-                        Switch(checked = useIntentFallback.value, onCheckedChange = { useIntentFallback.value = it; prefs.edit { putBoolean("compat_mode", it) } })
+                        HapticSwitch(checked = useIntentFallback.value, onCheckedChange = { useIntentFallback.value = it; prefs.edit { putBoolean("compat_mode", it) } })
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("拦截全部系统短信", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text("开启后接管所有短信，不再局限运营商", fontSize = 11.sp, color = Color.Gray)
+                            Text("接收全部系统短信", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("在本应用中保存全部新短信，不影响系统短信应用", fontSize = 11.sp, color = Color.Gray)
                         }
-                        Switch(checked = interceptAll.value, onCheckedChange = { interceptAll.value = it; prefs.edit { putBoolean("intercept_all_sms", it) } })
+                        HapticSwitch(checked = interceptAll.value, onCheckedChange = { interceptAll.value = it; prefs.edit { putBoolean("intercept_all_sms", it) } })
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("个性化主题", modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold)
                         Box {
-                            TextButton(onClick = { expandedTheme = true }) { Text("更改主题", color = MaterialTheme.colorScheme.primary) }
+                            HapticTextButton(onClick = { expandedTheme = true }) { Text("更改主题", color = MaterialTheme.colorScheme.primary) }
                             DropdownMenu(expanded = expandedTheme, onDismissRequest = { expandedTheme = false }) {
                                 listOf("经典元气黄", "极客冰川蓝", "猛男樱花粉", "清新薄荷绿").forEachIndexed { index, name ->
-                                    DropdownMenuItem(text = { Text(name) }, onClick = { ThemeManager.setTheme(context, index); expandedTheme = false })
+                                    DropdownMenuItem(text = { Text(name) }, onClick = { haptic(HapticEvent.Tap); ThemeManager.setTheme(context, index); expandedTheme = false })
                                 }
                             }
                         }
@@ -202,9 +203,9 @@ fun GeneralSettingsTab(context: Context, onBack: () -> Unit) {
                     Box(modifier = Modifier.size(70.dp).background(Color(0xFFFFCC80), CircleShape).border(3.dp, Color.Black, CircleShape), contentAlignment = Alignment.Center) { Text("👻", fontSize = 36.sp) }
                     Spacer(modifier = Modifier.height(12.dp))
                     Text("短信助手", fontWeight = FontWeight.Black, fontSize = 18.sp, color = Color.Black)
-                    Text("Version 2.0.0", fontSize = 12.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                    Text("Version ${BuildConfig.VERSION_NAME}", fontSize = 12.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(16.dp))
-                    CartoonButton(text = "前往 GitHub", color = Color(0xFFE3F2FD), onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, "https://github.com/Ghostdehole/sms-helper".toUri())) })
+                    CartoonButton(text = "前往 GitHub", color = Color(0xFFE3F2FD), onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, "https://github.com/Ghostdehole/Smshelper".toUri())) }.onFailure { Toast.makeText(context, "未找到可打开网页的应用", Toast.LENGTH_SHORT).show() } })
                 }
             }
         }
@@ -214,16 +215,16 @@ fun GeneralSettingsTab(context: Context, onBack: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showExportWarning.value = false }, containerColor = Color.White, title = { Text("⚠️ 导出安全警告", fontWeight = FontWeight.Black) },
             text = { Text("短信助手在本地采用AES加密存储短信。\n\n导出为TXT将解密为【明文】，请务必妥善保管文件！") },
-            confirmButton = { TextButton(onClick = { showExportWarning.value = false; val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date()); exportLauncher.launch("SmsBackup_$stamp.txt") }) { Text("继续导出", color = Color.Red, fontWeight = FontWeight.Bold) } },
-            dismissButton = { TextButton(onClick = { showExportWarning.value = false }) { Text("取消", color = Color.Gray) } }
+            confirmButton = { HapticTextButton(onClick = { showExportWarning.value = false; val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date()); exportLauncher.launch("SmsBackup_$stamp.txt") }) { Text("继续导出", color = Color.Red, fontWeight = FontWeight.Bold) } },
+            dismissButton = { HapticTextButton(onClick = { showExportWarning.value = false }) { Text("取消", color = Color.Gray) } }
         )
     }
 }
 
 @Composable
 fun RuleCenterTab(context: Context) {
-    var profiles by remember { mutableStateOf(ConfigManager.getAllProfiles().toList()) }
-    var subscriptions by remember { mutableStateOf(ConfigManager.getAllSubscriptions().toList()) }
+    val profiles by ConfigManager.profilesFlow.collectAsState()
+    val subscriptions by ConfigManager.subscriptionsFlow.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 
     val showAddDialog = remember { mutableStateOf(false) }
@@ -232,27 +233,30 @@ fun RuleCenterTab(context: Context) {
     var newMin by remember { mutableStateOf("60") }
     val showConfigSourceDialog = remember { mutableStateOf<String?>(null) }
 
-    fun refresh() { profiles = ConfigManager.getAllProfiles().toList(); subscriptions = ConfigManager.getAllSubscriptions().toList() }
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let {
+        if (uri != null) coroutineScope.launch {
             try {
-                val json = context.contentResolver.openInputStream(it)?.bufferedReader()?.use { reader -> reader.readText() }
-                if (!json.isNullOrBlank() && ConfigManager.importProfile(context, json, "文件导入", "系统")) { refresh(); Toast.makeText(context, "✅ 导入成功", Toast.LENGTH_SHORT).show() } else Toast.makeText(context, "❌ 格式错误", Toast.LENGTH_SHORT).show()
-            } catch (_: Exception) {}
+                val json = withContext(Dispatchers.IO) {
+                    requireNotNull(context.contentResolver.openInputStream(uri)).use { readUtf8Text(it, ConfigValidation.MAX_PROFILE_BYTES) }
+                }
+                val success = ConfigManager.importProfile(context, json, "文件导入", "系统")
+                Toast.makeText(context, if (success) "✅ 导入成功" else ConfigManager.lastError.value ?: "❌ 格式错误", Toast.LENGTH_SHORT).show()
+            } catch (_: Exception) { Toast.makeText(context, "导入失败，请选择不超过1MB的规则文件", Toast.LENGTH_SHORT).show() }
         }
     }
 
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CartoonButton(text = "恢复内置规则", color = MaterialTheme.colorScheme.secondary, modifier = Modifier.weight(1f), onClick = { ConfigManager.importDefaultProfiles(context); refresh() })
+                CartoonButton(text = "恢复内置规则", color = MaterialTheme.colorScheme.secondary, modifier = Modifier.weight(1f), onClick = { ConfigManager.importDefaultProfiles(context) })
                 CartoonButton(text = "系统文件导入", color = Color(0xFFC8E6C9), modifier = Modifier.weight(1f), onClick = { fileLauncher.launch("*/*") })
             }
             Spacer(modifier = Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CartoonButton(text = "📥 剪切板导入", color = Color(0xFFFFF9C4), modifier = Modifier.weight(1f), onClick = {
                     val pasteData = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip?.getItemAt(0)?.text?.toString()
-                    if (!pasteData.isNullOrBlank() && ConfigManager.importProfile(context, pasteData, "剪贴板导入", "剪贴板")) { refresh(); Toast.makeText(context, "✅ 导入成功", Toast.LENGTH_SHORT).show() }
+                    val success = !pasteData.isNullOrBlank() && ConfigManager.importProfile(context, pasteData, "剪贴板导入", "剪贴板")
+                    Toast.makeText(context, if (success) "✅ 导入成功" else "剪贴板为空或规则格式错误", Toast.LENGTH_SHORT).show()
                 })
                 CartoonButton(text = "📤 复制当前", color = Color(0xFFE1F5FE), modifier = Modifier.weight(1f), onClick = {
                     (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("JSON", ConfigManager.getCurrentProfileJson()))
@@ -275,8 +279,8 @@ fun RuleCenterTab(context: Context) {
                             Text(sub.name, fontWeight = FontWeight.Black, fontSize = 16.sp)
                             Text(sub.url, fontSize = 11.sp, color = Color.Gray, maxLines = 1)
                         }
-                        IconButton(onClick = { coroutineScope.launch { ConfigManager.updateSubscription(context, sub.url); refresh() } }) { Icon(Icons.Default.Refresh, "Update", tint = Color.Blue) }
-                        IconButton(onClick = { ConfigManager.removeSubscription(context, sub.url); refresh() }) { Icon(Icons.Default.Delete, "Delete", tint = Color.Red) }
+                        HapticIconButton(onClick = { coroutineScope.launch { val success = ConfigManager.updateSubscription(context, sub.url); Toast.makeText(context, if (success) "规则已更新" else "更新失败，请检查链接和网络", Toast.LENGTH_SHORT).show() } }) { Icon(Icons.Default.Refresh, "Update", tint = Color.Blue) }
+                        HapticIconButton(onClick = { ConfigManager.removeSubscription(context, sub.url) }) { Icon(Icons.Default.Delete, "Delete", tint = Color.Red) }
                     }
                 }
             }
@@ -291,7 +295,7 @@ fun RuleCenterTab(context: Context) {
                         Text(profile.name, fontWeight = FontWeight.Black, fontSize = 16.sp)
                         Text("来源: ${profile.source}", fontSize = 12.sp, color = Color.Gray)
                     }
-                    IconButton(onClick = { ConfigManager.deleteProfile(context, profile.id); refresh() }) { Icon(Icons.Default.Delete, "Delete", tint = Color.Red) }
+                    HapticIconButton(onClick = { ConfigManager.deleteProfile(context, profile.id) }) { Icon(Icons.Default.Delete, "Delete", tint = Color.Red) }
                 }
             }
         }
@@ -301,7 +305,16 @@ fun RuleCenterTab(context: Context) {
         AlertDialog(
             onDismissRequest = { showAddDialog.value = false }, containerColor = Color.White, title = { Text("➕ 增加云端订阅", fontWeight = FontWeight.Black) },
             text = { Column { OutlinedTextField(value = newName, onValueChange = { newName = it }, label = { Text("订阅名称") }, singleLine = true); Spacer(modifier = Modifier.height(8.dp)); OutlinedTextField(value = newUrl, onValueChange = { newUrl = it }, label = { Text("订阅链接 URL") }, singleLine = true); Spacer(modifier = Modifier.height(8.dp)); OutlinedTextField(value = newMin, onValueChange = { newMin = it }, label = { Text("自动同步(分钟)") }, singleLine = true) } },
-            confirmButton = { TextButton(onClick = { if (newName.isBlank() || newUrl.isBlank()) Toast.makeText(context, "名称和链接不能为空！", Toast.LENGTH_SHORT).show() else { ConfigManager.addOrUpdateSubscription(context, newUrl, newName, newMin.toIntOrNull() ?: 60); refresh(); showAddDialog.value = false } }) { Text("保存", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } }, dismissButton = { TextButton(onClick = { showAddDialog.value = false }) { Text("取消", color = Color.Gray) } }
+            confirmButton = { HapticTextButton(onClick = {
+                val interval = newMin.toIntOrNull()
+                if (interval == null || interval < 0 || !ConfigManager.addOrUpdateSubscription(context, newUrl.trim(), newName.trim(), interval)) {
+                    Toast.makeText(context, "请输入有效名称、HTTP(S)链接和非负同步间隔", Toast.LENGTH_SHORT).show()
+                } else {
+                    val url = newUrl.trim()
+                    showAddDialog.value = false
+                    coroutineScope.launch { val success = ConfigManager.updateSubscription(context, url); Toast.makeText(context, if (success) "订阅已保存并更新" else "订阅已保存，下载失败，可稍后重试", Toast.LENGTH_SHORT).show() }
+                }
+            }) { Text("保存", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } }, dismissButton = { HapticTextButton(onClick = { showAddDialog.value = false }) { Text("取消", color = Color.Gray) } }
         )
     }
 
@@ -310,7 +323,7 @@ fun RuleCenterTab(context: Context) {
         AlertDialog(
             onDismissRequest = { showConfigSourceDialog.value = null }, containerColor = Color.White, title = { Text("📜 规则源代码", fontWeight = FontWeight.Black) },
             text = { Box(modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp).background(Color(0xFFF5F5F5), RoundedCornerShape(8.dp)).padding(8.dp)) { LazyColumn { item { Text(jsonSource, fontSize = 11.sp, fontFamily = FontFamily.Monospace) } } } },
-            confirmButton = { TextButton(onClick = { (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("JSON", jsonSource)); Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show() }) { Text("复制", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } }, dismissButton = { TextButton(onClick = { showConfigSourceDialog.value = null }) { Text("关闭", color = Color.Gray) } }
+            confirmButton = { HapticTextButton(onClick = { (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("JSON", jsonSource)); Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show() }) { Text("复制", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } }, dismissButton = { HapticTextButton(onClick = { showConfigSourceDialog.value = null }) { Text("关闭", color = Color.Gray) } }
         )
     }
 }
@@ -323,9 +336,12 @@ fun SecretMenuScreen(onBack: () -> Unit) {
     val prefs = context.getSharedPreferences("SmsHelper_Prefs", Context.MODE_PRIVATE)
     var isPinEnabled by remember { mutableStateOf(prefs.getBoolean("pin_enabled", false)) }
     val showPinSetup = remember { mutableStateOf(false) }
+    var confirmClearHistory by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
+    BackHandler(onBack = onBack)
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("绝对禁区", fontWeight = FontWeight.Black) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)) },
+        topBar = { TopAppBar(title = { Text("绝对禁区", fontWeight = FontWeight.Black) }, navigationIcon = { HapticIconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)) },
         containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
@@ -335,23 +351,38 @@ fun SecretMenuScreen(onBack: () -> Unit) {
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("应用进入需四位密码", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                        Switch(checked = isPinEnabled, onCheckedChange = { if (it) showPinSetup.value = true else { isPinEnabled = false; prefs.edit { putBoolean("pin_enabled", false) } } })
+                        HapticSwitch(checked = isPinEnabled, onCheckedChange = { if (it) showPinSetup.value = true else { isPinEnabled = false; prefs.edit { putBoolean("pin_enabled", false) } } })
                     }
                 }
             }
             Spacer(modifier = Modifier.weight(1f))
-            CartoonButton("清空信箱历史", color = Color(0xFFFF7675), onClick = { SmsRepository.clearHistory(context); Toast.makeText(context, "信箱已清空", Toast.LENGTH_SHORT).show() })
+            CartoonButton("清空信箱历史", color = Color(0xFFFF7675), onClick = { confirmClearHistory = true })
             Spacer(modifier = Modifier.height(16.dp))
-            CartoonButton("🧨 格式化所有数据", color = Color.Red, onClick = { SmsRepository.factoryReset(context); Toast.makeText(context, "数据已毁灭", Toast.LENGTH_SHORT).show(); onBack() })
+            CartoonButton("🧨 格式化所有数据", color = Color.Red, onClick = { confirmReset = true })
         }
     }
 
+    if (confirmClearHistory) {
+        AlertDialog(onDismissRequest = { confirmClearHistory = false }, containerColor = Color.White,
+            title = { Text("清空信箱历史", fontWeight = FontWeight.Black) }, text = { Text("确认删除本应用保存的全部短信？此操作无法撤销，不会删除系统短信。") },
+            confirmButton = { HapticTextButton(onClick = {
+                try { SmsRepository.clearHistory(context); confirmClearHistory = false; Toast.makeText(context, "信箱已清空", Toast.LENGTH_SHORT).show() }
+                catch (_: Exception) { Toast.makeText(context, "清空失败，请稍后重试", Toast.LENGTH_SHORT).show() }
+            }) { Text("清空", color = Color.Red) } },
+            dismissButton = { HapticTextButton(onClick = { confirmClearHistory = false }) { Text("取消") } })
+    }
+    if (confirmReset) {
+        AlertDialog(onDismissRequest = { confirmReset = false }, containerColor = Color.White,
+            title = { Text("格式化所有数据", fontWeight = FontWeight.Black) }, text = { Text("确认删除本应用的短信、统计、规则、订阅、密码和设置，并恢复默认规则？此操作无法撤销。") },
+            confirmButton = { HapticTextButton(onClick = { if ((context as MainActivity).resetApplicationData()) { confirmReset = false; Toast.makeText(context, "已恢复默认数据与设置", Toast.LENGTH_SHORT).show(); onBack() } }) { Text("重置", color = Color.Red) } },
+            dismissButton = { HapticTextButton(onClick = { confirmReset = false }) { Text("取消") } })
+    }
     if (showPinSetup.value) {
         var setupPin by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showPinSetup.value = false }, containerColor = Color.White, title = { Text("设置 4 位安全密码", fontWeight = FontWeight.Black) },
-            text = { OutlinedTextField(value = setupPin, onValueChange = { if(it.length <= 4) setupPin = it }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { if (setupPin.length == 4) { isPinEnabled = true; prefs.edit { putBoolean("pin_enabled", true); putString("pin_code", setupPin) }; showPinSetup.value = false } }) { Text("保存", color = MaterialTheme.colorScheme.primary) } }
+            text = { OutlinedTextField(value = setupPin, onValueChange = { if (it.length <= 4 && it.all { char -> char in '0'..'9' }) setupPin = it }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), visualTransformation = PasswordVisualTransformation()) },
+            confirmButton = { HapticTextButton(enabled = setupPin.length == 4, onClick = { if (setupPin.length == 4) { isPinEnabled = true; prefs.edit { putBoolean("pin_enabled", true); putString("pin_code", setupPin) }; showPinSetup.value = false } }) { Text("保存", color = MaterialTheme.colorScheme.primary) } }
         )
     }
 }
