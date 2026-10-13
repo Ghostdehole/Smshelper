@@ -3,6 +3,20 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val appVersionName = providers.gradleProperty("appVersionName").orElse("2.0.1").get()
+val versionParts = Regex("([0-9]{1,4})\\.([0-9]{1,3})\\.([0-9]{1,3})(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?")
+    .matchEntire(appVersionName)
+    ?: error("appVersionName must be a version such as 2.0.1 or 2.1.0-beta.1")
+val defaultVersionCode = versionParts.groupValues[1].toLong() * 1_000_000 +
+    versionParts.groupValues[2].toLong() * 1_000 + versionParts.groupValues[3].toLong()
+val appVersionCode = providers.gradleProperty("appVersionCode")
+    .orElse(defaultVersionCode.toString()).get().toIntOrNull()
+    ?: error("appVersionCode must be a positive integer")
+
+require(appVersionCode in 1..2_100_000_000) {
+    "appVersionCode must be between 1 and 2100000000"
+}
+
 android {
     namespace = "com.ghost.smshelper"
     compileSdk {
@@ -15,8 +29,8 @@ android {
         applicationId = "com.ghost.smshelper"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "2.0.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -36,6 +50,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     splits {
@@ -58,6 +73,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

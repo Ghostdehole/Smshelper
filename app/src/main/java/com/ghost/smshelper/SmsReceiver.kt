@@ -3,40 +3,58 @@ package com.ghost.smshelper
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.telephony.SmsMessage
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import android.provider.Telephony
+import android.util.Log
+import java.util.concurrent.Executors
 
 class SmsReceiver : BroadcastReceiver() {
-    @Suppress("DEPRECATION", "SpellCheckingInspection")
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == "android.provider.Telephony.SMS_RECEIVED") {
-            val bundle = intent.extras ?: return
-            val pdus = bundle.get("pdus") as? Array<*> ?: return
-            val format = bundle.getString("format")
-
-            val fullMessage = StringBuilder()
-            var sender = ""
-
-            for (pdu in pdus) {
-                val sms = SmsMessage.createFromPdu(pdu as ByteArray, format)
-                sender = sms.displayOriginatingAddress ?: ""
-                fullMessage.append(sms.displayMessageBody)
-            }
-
-            ConfigManager.init(context)
-            SmsRepository.init(context)
-
-            val interceptAll = context.getSharedPreferences("SmsHelper_Prefs", Context.MODE_PRIVATE).getBoolean("intercept_all_sms", false)
-            val activeTarget = ConfigManager.activeConfig.value?.targetNumber ?: ""
-
-            // 如果开启了拦截所有，或者是当前运营商的目标号码，或者是默认常见的四大系统号码，则均入库
-            if (interceptAll || sender.contains(activeTarget) || sender.startsWith("100") || sender.startsWith("+86100")) {
-                CoroutineScope(Dispatchers.Main).launch {
-                    SmsRepository.addMessage(context, sender, fullMessage.toString())
+        if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
+        val messages = runCatching { Telephony.Sms.Intents.getMessagesFromIntent(intent) }.getOrNull()
+            ?.filterNotNull().orEmpty()
+        if (messages.isEmpty()) return
+        val pending = goAsync()
+        val appContext = context.applicationContext
+        worker.execute {
+            try {
+                ConfigManager.init(appContext)
+                SmsRepository.init(appContext)
+                val subId = receivingSubscription(appContext, intent)
+                val interceptAll = appContext.getSharedPreferences("SmsHelper_Prefs", Context.MODE_PRIVATE)
+                    .getBoolean("intercept_all_sms", false)
+                messages.groupBy { it.displayOriginatingAddress.orEmpty() }.forEach { (sender, parts) ->
+                    if (sender.isNotBlank() && (interceptAll || ConfigManager.resolveForSubscription(appContext, subId, sender) != null)) {
+                        SmsRepository.addMessage(
+                            appContext, sender, parts.joinToString("") { it.displayMessageBody.orEmpty() },
+                            subId, parts.first().timestampMillis
+                        )
+                    }
                 }
+            } catch (error: Exception) {
+                // Do not put private SMS content in logs.
+                Log.e("SmsReceiver", "Unable to store incoming SMS", error)
+            } finally {
+                pending.finish()
             }
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun receivingSubscription(context: Context, intent: Intent): Int? {
+        val keys = listOf("android.telephony.extra.SUBSCRIPTION_INDEX", "subscription", "subscription_id", "sub_id")
+        keys.forEach { key ->
+            val id = (intent.extras?.get(key) as? Number)?.toInt()
+            if (id != null && id >= 0) return id
+        }
+        val sims = getActiveSims(context)
+        val slot = listOf("slot", "slot_id", "phone").firstNotNullOfOrNull {
+            (intent.extras?.get(it) as? Number)?.toInt()
+        }
+        return if (slot != null) sims.firstOrNull { it.slotIndex == slot }?.subId
+        else sims.singleOrNull()?.subId // An ambiguous multi-SIM message stays unassigned.
+    }
+
+    companion object {
+        private val worker = Executors.newSingleThreadExecutor()
     }
 }

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,7 +38,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -46,10 +46,11 @@ import java.util.*
 fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> Unit) {
     val context = LocalContext.current
     val prefs = context.getSharedPreferences("SmsHelper_Prefs", Context.MODE_PRIVATE)
-    val useIntentFallback = remember { mutableStateOf(prefs.getBoolean("compat_mode", false)) }
-    var lastSyncCompleteTime by remember { mutableStateOf(prefs.getString("last_sync_time", "从未")) }
+    val haptic = actionHaptics()
+    fun useSystemSender() = prefs.getBoolean("compat_mode", false)
+    var lastQueryTime by rememberSaveable { mutableStateOf(prefs.getString("last_query_time", prefs.getString("last_sync_time", "从未"))) }
 
-    var showFullScreenInbox by remember { mutableStateOf(false) }
+    var showFullScreenInbox by rememberSaveable { mutableStateOf(false) }
     var backPressedTime by remember { mutableLongStateOf(0L) }
     BackHandler {
         if (showFullScreenInbox) showFullScreenInbox = false
@@ -61,28 +62,50 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
     val messages by SmsRepository.messages.collectAsState()
     val unreadCount by SmsRepository.unreadCount.collectAsState()
     val activeConfig by ConfigManager.activeConfig.collectAsState()
+    val isLegacyAccount by SmsRepository.isLegacyAccount.collectAsState()
 
     var simList by remember { mutableStateOf(getActiveSims(context)) }
     var selectedSim by remember { mutableStateOf(simList.find { it.subId == prefs.getInt("selected_sim_subid", -1) } ?: simList.firstOrNull()) }
 
-    val showDashboard = remember { mutableStateOf(false) }
+    val showDashboard = rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(unreadCount, showDashboard.value, showFullScreenInbox) {
+        if (unreadCount > 0 && (showDashboard.value || showFullScreenInbox) && (context as? Activity)?.hasWindowFocus() == true) {
+            SmsRepository.clearUnread(context)
+        }
+    }
 
     val showInputDialog = remember { mutableStateOf<ActionCommand?>(null) }
-    var inputText by remember { mutableStateOf("") }
+    var inputText by rememberSaveable { mutableStateOf("") }
+    var inputTargetSubId by rememberSaveable { mutableIntStateOf(-1) }
+    var inputTargetNumber by rememberSaveable { mutableStateOf("") }
     val showTrafficDialog = remember { mutableStateOf(false) }
     val showBillsDialog = remember { mutableStateOf(false) }
     val showSimInfoDialog = remember { mutableStateOf<SimInfo?>(null) }
-    var syncCommandsQueue by remember { mutableStateOf<List<String>>(emptyList()) }
-    var currentSyncIndex by remember { mutableIntStateOf(-1) }
+    var syncCommandsQueue by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
+    var currentSyncIndex by rememberSaveable { mutableIntStateOf(-1) }
+    var syncSubId by rememberSaveable { mutableIntStateOf(-1) }
+    var syncTargetNumber by rememberSaveable { mutableStateOf("") }
+    var syncAccepted by rememberSaveable { mutableStateOf(false) }
+    fun dispatchSync(command: String): Boolean {
+        val sim = getActiveSims(context).find { it.subId == syncSubId }
+        if (sim == null) {
+            Toast.makeText(context, "同步所选SIM卡已不可用", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        val activity = context as MainActivity
+        return if (useSystemSender()) activity.sendSmsViaSystem(command, sim, syncTargetNumber)
+        else activity.sendSmsSilently(command, sim.subId, syncTargetNumber, false)
+    }
     val coroutineScope = rememberCoroutineScope()
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-        if (perms.values.all { it }) {
+        if (perms[android.Manifest.permission.READ_PHONE_STATE] == true || androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_PHONE_STATE) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             simList = getActiveSims(context)
             val savedSubId = prefs.getInt("selected_sim_subid", -1)
             val simToSelect = simList.find { it.subId == savedSubId } ?: simList.firstOrNull()
             selectedSim = simToSelect
-            if (simToSelect != null) ConfigManager.switchCarrier(simToSelect.mnc, simToSelect.carrierName)
+            SmsRepository.selectSubscription(context, simToSelect?.subId)
+            if (simToSelect != null) ConfigManager.switchCarrier(simToSelect.mnc, simToSelect.carrierName, simToSelect.mcc)
         }
     }
 
@@ -93,7 +116,8 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
             val savedSubId = prefs.getInt("selected_sim_subid", -1)
             val simToSelect = simList.find { it.subId == savedSubId } ?: simList.firstOrNull()
             selectedSim = simToSelect
-            if (simToSelect != null) ConfigManager.switchCarrier(simToSelect.mnc, simToSelect.carrierName)
+            SmsRepository.selectSubscription(context, simToSelect?.subId)
+            if (simToSelect != null) ConfigManager.switchCarrier(simToSelect.mnc, simToSelect.carrierName, simToSelect.mcc)
         } else permissionLauncher.launch(requiredPerms)
     }
 
@@ -103,14 +127,16 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                 TopAppBar(
                     title = { Text(selectedSim?.carrierName ?: "短信助手", fontWeight = FontWeight.Black, fontSize = 22.sp) },
                     actions = {
-                        IconButton(onClick = {
+                        HapticIconButton(onClick = {
                             if (selectedSim != null && activeConfig != null && activeConfig!!.syncCommands.isNotEmpty()) {
-                                syncCommandsQueue = activeConfig!!.syncCommands; currentSyncIndex = 0
-                                if (useIntentFallback.value) (context as MainActivity).sendSmsViaSystem(syncCommandsQueue[0], selectedSim!!, activeConfig!!.targetNumber)
-                                else (context as MainActivity).sendSmsSilently(syncCommandsQueue[0], selectedSim!!.subId, activeConfig!!.targetNumber, false)
-                            }
+                                syncCommandsQueue = ArrayList(activeConfig!!.syncCommands)
+                                syncSubId = selectedSim!!.subId
+                                syncTargetNumber = activeConfig!!.targetNumber
+                                currentSyncIndex = 0
+                                syncAccepted = dispatchSync(syncCommandsQueue[0])
+                            } else Toast.makeText(context, "请选择有效SIM卡和同步规则", Toast.LENGTH_SHORT).show()
                         }) { Icon(Icons.Default.Refresh, "同步", tint = Color.Black) }
-                        IconButton(onClick = onNavigateToSettings) { Icon(Icons.Default.Settings, "设置", tint = Color.Black) }
+                        HapticIconButton(onClick = onNavigateToSettings) { Icon(Icons.Default.Settings, "设置", tint = Color.Black) }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
                 )
@@ -120,10 +146,10 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
             Column(modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
                 CartoonCard(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(top = 12.dp, bottom = 16.dp, start = 16.dp, end = 16.dp)) {
-                        Text("最后更新: $lastSyncCompleteTime", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.align(Alignment.End))
+                        Text("最后查询: $lastQueryTime${if (isLegacyAccount) " · 旧版未分卡数据" else ""}", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.align(Alignment.End))
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(95.dp).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { showTrafficDialog.value = true }) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(95.dp).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { haptic(HapticEvent.Tap); showTrafficDialog.value = true }) {
                                 val progress = if (parsedInfo.usedDataMb + parsedInfo.remainingTotalDataMb > 0) (parsedInfo.remainingTotalDataMb / (parsedInfo.usedDataMb + parsedInfo.remainingTotalDataMb)).toFloat() else 0f
                                 val animProgress by animateFloatAsState(targetValue = progress, animationSpec = spring(stiffness = Spring.StiffnessVeryLow), label = "")
                                 CircularProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxSize(), color = Color(0xFFEEEEEE), strokeWidth = 10.dp)
@@ -143,7 +169,7 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                                     Text("${parsedInfo.remainingVoice}分", fontSize = 16.sp, fontWeight = FontWeight.Black, color = Color.Black)
                                 }
                             }
-                            Column(horizontalAlignment = Alignment.End, modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { showBillsDialog.value = true }) {
+                            Column(horizontalAlignment = Alignment.End, modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { haptic(HapticEvent.Tap); showBillsDialog.value = true }) {
                                 Text("账户余额", fontSize = 13.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                                 Text("¥ ${parsedInfo.balance}", fontSize = 26.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.height(4.dp))
@@ -161,8 +187,8 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                             Box(
                                 modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(if (isSelected) Color.Black else Color.Transparent)
                                     .border(2.dp, Color.Black, RoundedCornerShape(12.dp)).combinedClickable(
-                                        onClick = { selectedSim = sim; prefs.edit { putInt("selected_sim_subid", sim.subId) }; ConfigManager.switchCarrier(sim.mnc, sim.carrierName) },
-                                        onLongClick = { showSimInfoDialog.value = sim }
+                                        onClick = { haptic(HapticEvent.Tap); selectedSim = sim; prefs.edit { putInt("selected_sim_subid", sim.subId) }; SmsRepository.selectSubscription(context, sim.subId); ConfigManager.switchCarrier(sim.mnc, sim.carrierName, sim.mcc) },
+                                        onLongClick = { haptic(HapticEvent.LongPress); showSimInfoDialog.value = sim }
                                     ).padding(horizontal = 12.dp, vertical = 6.dp)
                             ) { Text("卡${sim.slotIndex + 1}: ${sim.displayName}", color = if (isSelected) Color.White else Color.Black, fontWeight = FontWeight.Bold) }
                         }
@@ -214,11 +240,9 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                         val showScroll by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || qNumber.isNotBlank() || qBody.isNotBlank() || qDate.isNotBlank() } }
                         androidx.compose.animation.AnimatedVisibility(visible = showScroll || messages.isNotEmpty(), modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp), enter = scaleIn(), exit = scaleOut()) {
                             val isSearching = qNumber.isNotBlank() || qBody.isNotBlank() || qDate.isNotBlank()
-                            FloatingActionButton(
+                            InboxActionButton(isSearching = isSearching, size = 40.dp,
                                 onClick = { if (isSearching) { qNumber=""; qBody=""; qDate="" } else coroutineScope.launch { listState.animateScrollToItem(0) } },
-                                modifier = Modifier.size(40.dp).combinedClickable(onClick = { if (isSearching) { qNumber=""; qBody=""; qDate="" } else coroutineScope.launch { listState.animateScrollToItem(0) } }, onLongClick = { showAdvSearch = true }),
-                                containerColor = if (isSearching) Color.Red else Color.Black, contentColor = Color.White, shape = CircleShape
-                            ) { Icon(if (isSearching) Icons.Default.Clear else Icons.Default.Search, "Action") }
+                                onLongClick = { showAdvSearch = true })
                         }
                     }
 
@@ -231,7 +255,7 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedTextField(value = qDate, onValueChange = { qDate = it }, label = { Text("日期(如: 2026-03-09)") }, singleLine = true)
                             }},
-                            confirmButton = { TextButton(onClick = { showAdvSearch = false }) { Text("查找", color = MaterialTheme.colorScheme.primary) } }
+                            confirmButton = { HapticTextButton(onClick = { showAdvSearch = false }) { Text("查找", color = MaterialTheme.colorScheme.primary) } }
                         )
                     }
                 }
@@ -239,19 +263,27 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                 Spacer(modifier = Modifier.height(16.dp))
 
                 LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(bottom = 16.dp)) {
-                    val categories = activeConfig?.categories ?: emptyList()
+                    val displayedConfig = activeConfig
+                    val displayedSubId = selectedSim?.subId
+                    val categories = displayedConfig?.categories ?: emptyList()
                     items(categories) { category ->
                         Text(category.title, color = Color.Black, fontWeight = FontWeight.Black, fontSize = 16.sp, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
                         category.commands.chunked(2).forEach { rowCommands ->
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 rowCommands.forEach { cmd ->
                                     CartoonButton(text = cmd.name, modifier = Modifier.weight(1f).padding(bottom = 8.dp), color = Color(0xFFF1F2F6), onClick = {
-                                        if (cmd.requiresInput) showInputDialog.value = cmd
-                                        else {
-                                            selectedSim?.let {
-                                                val act = context as MainActivity; val target = activeConfig?.targetNumber ?: "10086"
-                                                if (useIntentFallback.value) act.sendSmsViaSystem(cmd.code, it, target) else act.sendSmsSilently(cmd.code, it.subId, target)
-                                            } ?: Toast.makeText(context, "未选择有效的SIM卡", Toast.LENGTH_SHORT).show()
+                                        val sim = getActiveSims(context).find { it.subId == displayedSubId }
+                                        val target = displayedConfig?.targetNumber
+                                        if (sim == null || target.isNullOrBlank() || selectedSim?.subId != displayedSubId || activeConfig != displayedConfig) {
+                                            Toast.makeText(context, "SIM卡或规则已变化，请重新选择", Toast.LENGTH_SHORT).show()
+                                        } else if (cmd.requiresInput) {
+                                            inputText = ""
+                                            inputTargetSubId = sim.subId
+                                            inputTargetNumber = target
+                                            showInputDialog.value = cmd
+                                        } else {
+                                            val act = context as MainActivity
+                                            if (useSystemSender()) act.sendSmsViaSystem(cmd.code, sim, target) else act.sendSmsSilently(cmd.code, sim.subId, target)
                                         }
                                     })
                                 }
@@ -265,8 +297,9 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
 
         // ================= 大信箱满屏浮层 =================
         AnimatedVisibility(visible = showFullScreenInbox, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
-            var replyTarget by remember { mutableStateOf<String?>(null) }
-            var replyText by remember { mutableStateOf("") }
+            var replyTarget by rememberSaveable { mutableStateOf<String?>(null) }
+            var replyText by rememberSaveable { mutableStateOf("") }
+            var replySubId by rememberSaveable { mutableIntStateOf(-1) }
             val fullListState = rememberLazyListState()
 
             var showAdvSearch by remember { mutableStateOf(false) }
@@ -285,13 +318,10 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                     Column(modifier = Modifier.fillMaxSize()) {
                         TopAppBar(
                             title = { Text("大信箱", fontWeight = FontWeight.Black) },
-                            navigationIcon = { IconButton(onClick = { showFullScreenInbox = false }) { Icon(Icons.Default.Close, "关闭") } },
+                            navigationIcon = { HapticIconButton(onClick = { showFullScreenInbox = false }) { Icon(Icons.Default.Close, "关闭") } },
                             actions = {
-                                var isPressing by remember { mutableStateOf(false) }
-                                LaunchedEffect(isPressing) { if (isPressing) { delay(5000); isPressing = false; onNavigateToSecretMenu() } }
-                                Icon(Icons.Default.Settings, "Secret", modifier = Modifier.padding(16.dp).pointerInput(Unit) {
-                                    awaitPointerEventScope { while (true) awaitPointerEvent() }
-                                }.combinedClickable(onClick = { Toast.makeText(context, "按得不够久哦", Toast.LENGTH_SHORT).show() }, onLongClick = { onNavigateToSecretMenu() }))
+                                Icon(Icons.Default.Settings, "Secret", modifier = Modifier.padding(16.dp)
+                                    .combinedClickable(onClick = { haptic(HapticEvent.Tap); Toast.makeText(context, "长按进入设置", Toast.LENGTH_SHORT).show() }, onLongClick = { haptic(HapticEvent.LongPress); onNavigateToSecretMenu() }))
                             },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
                         )
@@ -301,7 +331,7 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                             else {
                                 LazyColumn(state = fullListState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 100.dp, start = 16.dp, end = 16.dp, top = 8.dp)) {
                                     items(filtered) { msg ->
-                                        CartoonCard(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), backgroundColor = Color.White, onLongClick = { if (msg.sender != "系统") replyTarget = msg.sender else Toast.makeText(context, "不可回复系统", Toast.LENGTH_SHORT).show() }) {
+                                        CartoonCard(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), backgroundColor = Color.White, onLongClick = { if (msg.sender != "系统") { replyTarget = msg.sender; replySubId = msg.subId ?: selectedSim?.subId ?: -1 } else Toast.makeText(context, "不可回复系统", Toast.LENGTH_SHORT).show() }) {
                                             Column(modifier = Modifier.padding(12.dp)) {
                                                 Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                                                     Text("来自: ${msg.sender}", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black)
@@ -315,7 +345,7 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                                 }
 
                                 Box(modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(40.dp)
-                                    .pointerInput(Unit) {
+                                    .pointerInput(filtered.size) {
                                         detectVerticalDragGestures { change, _ ->
                                             val y = change.position.y; val ratio = (y / size.height).coerceIn(0f, 1f)
                                             val target = maxOf(0, (filtered.size * ratio).toInt().coerceIn(0, filtered.size - 1))
@@ -326,13 +356,11 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                             }
 
                             val isSearching = qNumber.isNotBlank() || qBody.isNotBlank() || qDate.isNotBlank()
-                            val showScroll by remember { derivedStateOf { fullListState.firstVisibleItemIndex > 0 || isSearching } }
+                            val showScroll by remember { derivedStateOf { fullListState.firstVisibleItemIndex > 0 || qNumber.isNotBlank() || qBody.isNotBlank() || qDate.isNotBlank() } }
                             androidx.compose.animation.AnimatedVisibility(visible = showScroll || messages.isNotEmpty(), modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp), enter = scaleIn(), exit = scaleOut()) {
-                                FloatingActionButton(
+                                InboxActionButton(isSearching = isSearching,
                                     onClick = { if (isSearching) { qNumber=""; qBody=""; qDate="" } else coroutineScope.launch { fullListState.animateScrollToItem(0) } },
-                                    modifier = Modifier.combinedClickable(onClick = { if (isSearching) { qNumber=""; qBody=""; qDate="" } else coroutineScope.launch { fullListState.animateScrollToItem(0) } }, onLongClick = { showAdvSearch = true }),
-                                    containerColor = if (isSearching) Color.Red else Color.Black, contentColor = Color.White
-                                ) { Icon(if (isSearching) Icons.Default.Clear else Icons.Default.Search, "Top") }
+                                    onLongClick = { showAdvSearch = true })
                             }
                         }
                     }
@@ -347,16 +375,20 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                                 Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).navigationBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
                                     OutlinedTextField(value = replyText, onValueChange = { replyText = it }, modifier = Modifier.weight(1f), placeholder = { Text("回复 $replyTarget...") }, singleLine = true, shape = RoundedCornerShape(24.dp))
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    IconButton(
+                                    HapticIconButton(
                                         onClick = {
-                                            if (replyText.isNotBlank() && selectedSim != null) {
-                                                val act = context as MainActivity
-                                                if (useIntentFallback.value) act.sendSmsViaSystem(replyText, selectedSim!!, replyTarget!!) else act.sendSmsSilently(replyText, selectedSim!!.subId, replyTarget!!)
-                                                replyText = ""; replyTarget = null
+                                            if (replyText.isNotBlank()) {
+                                                val sim = getActiveSims(context).find { it.subId == replySubId }
+                                                if (sim == null) Toast.makeText(context, "回复所用SIM卡已不可用", Toast.LENGTH_SHORT).show()
+                                                else {
+                                                    val act = context as MainActivity
+                                                    val accepted = if (useSystemSender()) act.sendSmsViaSystem(replyText, sim, replyTarget!!) else act.sendSmsSilently(replyText, sim.subId, replyTarget!!)
+                                                    if (accepted) { replyText = ""; replyTarget = null; replySubId = -1 }
+                                                }
                                             }
                                         }, modifier = Modifier.background(MaterialTheme.colorScheme.primary, CircleShape).size(48.dp)
                                     ) { Icon(Icons.Default.Send, "发送", tint = Color.White) }
-                                    IconButton(onClick = { replyTarget = null; replyText = "" }) { Icon(Icons.Default.Close, "取消", tint = Color.Gray) }
+                                    HapticIconButton(onClick = { replyTarget = null; replyText = ""; replySubId = -1 }) { Icon(Icons.Default.Close, "取消", tint = Color.Gray) }
                                 }
                             }
                         }
@@ -371,7 +403,7 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedTextField(value = qDate, onValueChange = { qDate = it }, label = { Text("日期(如: 2026-03-09)") }, singleLine = true)
                             }},
-                            confirmButton = { TextButton(onClick = { showAdvSearch = false }) { Text("查找", color = MaterialTheme.colorScheme.primary) } }
+                            confirmButton = { HapticTextButton(onClick = { showAdvSearch = false }) { Text("查找", color = MaterialTheme.colorScheme.primary) } }
                         )
                     }
                 }
@@ -379,52 +411,61 @@ fun HomeScreen(onNavigateToSettings: () -> Unit, onNavigateToSecretMenu: () -> U
         }
 
         if (currentSyncIndex >= 0 && currentSyncIndex < syncCommandsQueue.size) {
-            val isLast = currentSyncIndex == syncCommandsQueue.size - 1; val currentCmd = syncCommandsQueue[currentSyncIndex]
+            val isLast = currentSyncIndex == syncCommandsQueue.size - 1
+            val currentCmd = syncCommandsQueue[currentSyncIndex]
             AlertDialog(
-                onDismissRequest = { }, containerColor = Color.White, title = { Text("📡 同步 (${currentSyncIndex + 1}/${syncCommandsQueue.size})", fontWeight = FontWeight.Black) },
-                text = { Text("已发送[$currentCmd]，系统允许后点击下方继续。", fontSize = 15.sp) },
+                onDismissRequest = { }, containerColor = Color.White,
+                title = { Text("📡 同步 (${currentSyncIndex + 1}/${syncCommandsQueue.size})", fontWeight = FontWeight.Black) },
+                text = { Text(if (syncAccepted) "[$currentCmd] 已提交发送。请完成系统确认并等待运营商回复，提交不代表数据已更新。" else "[$currentCmd] 未能提交发送，请检查SIM卡及权限后重试。", fontSize = 15.sp) },
                 confirmButton = {
-                    TextButton(onClick = {
-                        if (isLast) {
-                            currentSyncIndex = -1; Toast.makeText(context, "🎉 同步完成", Toast.LENGTH_SHORT).show()
+                    HapticTextButton(onClick = {
+                        if (!syncAccepted) syncAccepted = dispatchSync(currentCmd)
+                        else if (isLast) {
+                            currentSyncIndex = -1
                             val time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
-                            prefs.edit { putString("last_sync_time", time) }; lastSyncCompleteTime = time
+                            prefs.edit { putString("last_query_time", time) }
+                            lastQueryTime = time
+                            Toast.makeText(context, "查询请求已提交，等待运营商回复", Toast.LENGTH_SHORT).show()
                         } else {
-                            currentSyncIndex++; val nextCmd = syncCommandsQueue[currentSyncIndex]
-                            selectedSim?.let {
-                                val act = context as MainActivity; val target = activeConfig?.targetNumber ?: "10086"
-                                if (useIntentFallback.value) act.sendSmsViaSystem(nextCmd, it, target) else act.sendSmsSilently(nextCmd, it.subId, target, false)
-                            }
+                            currentSyncIndex++
+                            syncAccepted = dispatchSync(syncCommandsQueue[currentSyncIndex])
                         }
-                    }) { Text(if (isLast) "✅ 结束同步" else "👉 下一条", fontWeight = FontWeight.Bold) }
-                }, dismissButton = { TextButton(onClick = { currentSyncIndex = -1 }) { Text("中止", color = Color.Gray) } }
+                    }) { Text(if (!syncAccepted) "重试" else if (isLast) "✅ 结束同步" else "👉 下一条", fontWeight = FontWeight.Bold) }
+                }, dismissButton = { HapticTextButton(onClick = { currentSyncIndex = -1 }) { Text("中止", color = Color.Gray) } }
             )
         }
         if (showInputDialog.value != null) {
             val cmd = showInputDialog.value!!
             AlertDialog(
-                onDismissRequest = { showInputDialog.value = null }, containerColor = Color.White, title = { Text("填写魔法参数: ${cmd.name}", fontWeight = FontWeight.Black) },
+                onDismissRequest = { showInputDialog.value = null; inputText = "" }, containerColor = Color.White, title = { Text("填写魔法参数: ${cmd.name}", fontWeight = FontWeight.Black) },
                 text = { OutlinedTextField(value = inputText, onValueChange = { inputText = it }, label = { Text(cmd.inputHint) }, singleLine = true) },
                 confirmButton = {
-                    TextButton(onClick = {
-                        val finalCommand = "${cmd.code}$inputText"
-                        selectedSim?.let {
-                            val act = context as MainActivity; val target = activeConfig?.targetNumber ?: "10086"
-                            if (useIntentFallback.value) act.sendSmsViaSystem(finalCommand, it, target) else act.sendSmsSilently(finalCommand, it.subId, target)
+                    HapticTextButton(onClick = {
+                        val error = CommandParameters.validate(cmd, inputText)
+                        if (error != null) Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                        else {
+                            val sim = getActiveSims(context).find { it.subId == inputTargetSubId }
+                            val target = inputTargetNumber
+                            if (sim == null || target.isBlank()) Toast.makeText(context, "原指令所用SIM卡或号码已不可用", Toast.LENGTH_SHORT).show()
+                            else {
+                                val finalCommand = "${cmd.code}${inputText.trim()}"
+                                val act = context as MainActivity
+                                val accepted = if (useSystemSender()) act.sendSmsViaSystem(finalCommand, sim, target) else act.sendSmsSilently(finalCommand, sim.subId, target)
+                                if (accepted) { showInputDialog.value = null; inputText = "" }
+                            }
                         }
-                        showInputDialog.value = null; inputText = ""
                     }) { Text("biu~ 发送", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
-                }, dismissButton = { TextButton(onClick = { showInputDialog.value = null }) { Text("算了", color = Color.Gray, fontWeight = FontWeight.Bold) } }
+                }, dismissButton = { HapticTextButton(onClick = { showInputDialog.value = null; inputText = "" }) { Text("算了", color = Color.Gray, fontWeight = FontWeight.Bold) } }
             )
         }
-        if (showTrafficDialog.value) AlertDialog(onDismissRequest = { showTrafficDialog.value = false }, containerColor = Color.White, title = { Text("🚀 流量报告", fontWeight = FontWeight.Black) }, text = { LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) { if (parsedInfo.trafficDetails.isEmpty()) item { Text("暂时没有明细~", color = Color.Gray) } else items(parsedInfo.trafficDetails) { Text("👉 $it\n", fontSize = 14.sp) } } }, confirmButton = { TextButton(onClick = { showTrafficDialog.value = false }) { Text("朕知道了", fontWeight = FontWeight.Bold) } })
-        if (showBillsDialog.value) AlertDialog(onDismissRequest = { showBillsDialog.value = false }, containerColor = Color.White, title = { Text("💰 历史账单", fontWeight = FontWeight.Black) }, text = { LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) { if (parsedInfo.historicalBills.isEmpty()) item { Text("没有记录~", color = Color.Gray) } else items(parsedInfo.historicalBills.reversed()) { bill -> Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(bill.month, fontWeight = FontWeight.Bold); Text("¥ ${bill.amount}", color = Color(0xFFFF9800), fontWeight = FontWeight.Black) } } } }, confirmButton = { TextButton(onClick = { showBillsDialog.value = false }) { Text("好滴", fontWeight = FontWeight.Bold) } })
+        if (showTrafficDialog.value) AlertDialog(onDismissRequest = { showTrafficDialog.value = false }, containerColor = Color.White, title = { Text("🚀 流量报告", fontWeight = FontWeight.Black) }, text = { LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) { if (parsedInfo.trafficDetails.isEmpty()) item { Text("暂时没有明细~", color = Color.Gray) } else items(parsedInfo.trafficDetails) { Text("👉 $it\n", fontSize = 14.sp) } } }, confirmButton = { HapticTextButton(onClick = { showTrafficDialog.value = false }) { Text("朕知道了", fontWeight = FontWeight.Bold) } })
+        if (showBillsDialog.value) AlertDialog(onDismissRequest = { showBillsDialog.value = false }, containerColor = Color.White, title = { Text("💰 历史账单", fontWeight = FontWeight.Black) }, text = { LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) { if (parsedInfo.historicalBills.isEmpty()) item { Text("没有记录~", color = Color.Gray) } else items(parsedInfo.historicalBills.reversed()) { bill -> Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(bill.month, fontWeight = FontWeight.Bold); Text("¥ ${bill.amount}", color = Color(0xFFFF9800), fontWeight = FontWeight.Black) } } } }, confirmButton = { HapticTextButton(onClick = { showBillsDialog.value = false }) { Text("好滴", fontWeight = FontWeight.Bold) } })
         if (showSimInfoDialog.value != null) {
             val sim = showSimInfoDialog.value!!
             AlertDialog(
                 onDismissRequest = { showSimInfoDialog.value = null }, containerColor = Color.White, title = { Text("📱 高级卡片信息", fontWeight = FontWeight.Black) },
                 text = { Column { Text("卡槽: SIM ${sim.slotIndex + 1}", fontWeight = FontWeight.Bold); Text("运营商: ${sim.carrierName}"); Text("本机号码: ${sim.number}"); Spacer(modifier = Modifier.height(8.dp)); Text("ICCID: \n${sim.iccId}", fontSize = 12.sp); Text("MCC: ${sim.mcc} | MNC: ${sim.mnc}"); Text("漫游: ${sim.isRoaming}"); Text("底层标识: ${sim.subId}") } },
-                confirmButton = { TextButton(onClick = { showSimInfoDialog.value = null }) { Text("关闭") } }
+                confirmButton = { HapticTextButton(onClick = { showSimInfoDialog.value = null }) { Text("关闭") } }
             )
         }
     }
