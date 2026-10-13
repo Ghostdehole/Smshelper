@@ -63,3 +63,16 @@ PR 的 GitHub Actions 执行检查并上传调试签名的 Debug APK、未签名
 ## 许可证
 
 仓库包含 [GNU GPL v3](LICENSE) 许可证。
+
+## 独立测试分支与安装包
+
+`preview/theme-workshop` 用于新版主题、布局和功能的安装验收。测试期间不自动合并到 `main`，也不发布正式 Release。你可以保留当前正式版，同时安装 **SmsHelper 测试版** 对比体验；不采用这些改动时，卸载测试版并删除测试分支即可，正式版及其数据不受影响。
+
+1. 打开仓库 **Actions → Build Preview APKs**，选择 `preview/theme-workshop` 最新一次成功运行。
+2. 在运行页底部 **Artifacts** 下载 `Smshelper-Preview-installable-APKs-运行编号`，解压 ZIP。
+3. 小米 13 安装 `Smshelper-2.1.0-preview.运行编号-arm64-v8a.apk`；不知道设备架构时选择 `universal.apk`。一次只需安装其中一个 APK。
+4. 测试版使用独立包名 `com.ghost.smshelper.preview`，首次打开需要单独授权和配置；不会自动读取正式版的数据。需要测试历史短信时，可从正式版导出 TXT，再导入测试版。
+
+测试产物保留 14 天，包含 APK、SHA-256 校验和与构建信息；检查报告在单独的 Reports 产物中。删除远程分支不会自动卸载手机上的测试版，也不会立即删除已生成的 Actions 产物。
+
+测试版继承 Release 构建设置，关闭调试标记，使用相同业务代码与触感逻辑。默认由本次 CI 生成临时测试签名，首次安装无需配置密钥；后续 CI 安装包如因签名不同不能覆盖，请先导出要保留的**测试版数据**，卸载**测试版**后再安装，保留正式版即可。长期测试可配置专用 `PREVIEW_KEYSTORE_*` Secrets，详见 [构建与发布说明](.github/BUILDING.md#独立-preview-测试版)。

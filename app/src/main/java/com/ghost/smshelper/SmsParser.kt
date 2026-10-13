@@ -82,7 +82,7 @@ object SmsParser {
         return total.toInt()
     }
 
-    internal data class Result(val info: ParsedInfo, val matched: Boolean)
+    internal data class Result(val info: ParsedInfo, val matched: Boolean, val matchedFields: Set<String> = emptySet())
 
     fun parse(current: ParsedInfo, body: String, rules: Map<String, String>): ParsedInfo =
         parseResult(current, body, rules).info
@@ -117,7 +117,17 @@ object SmsParser {
             trafficDetails = traffic.ifEmpty { current.trafficDetails },
             historicalBills = bills.ifEmpty { current.historicalBills }
         )
-        return Result(info, listOf(balance, consumption, usedData, remainingData, generalData, totalVoice, remainingVoice)
-            .any { it != null } || traffic.isNotEmpty() || bills.isNotEmpty())
+        val fields = buildSet {
+            if (balance != null) add("balance")
+            if (consumption != null) add("consumption")
+            if (usedData != null) add("usedData")
+            if (remainingData != null) add("remainingData")
+            if (generalData != null) add("generalData")
+            if (totalVoice != null) add("voiceInclude")
+            if (remainingVoice != null) add("voiceRemain")
+            if (traffic.isNotEmpty()) add("traffic")
+            if (bills.isNotEmpty()) add("bill")
+        }
+        return Result(info, fields.isNotEmpty(), fields)
     }
 }

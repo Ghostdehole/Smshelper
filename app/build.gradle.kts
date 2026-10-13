@@ -16,6 +16,10 @@ val appVersionCode = providers.gradleProperty("appVersionCode")
 require(appVersionCode in 1..2_100_000_000) {
     "appVersionCode must be between 1 and 2100000000"
 }
+val previewBuildNumber = providers.gradleProperty("previewBuildNumber").orNull
+require(previewBuildNumber == null || Regex("[1-9][0-9]{0,9}").matches(previewBuildNumber)) {
+    "previewBuildNumber must be a positive integer"
+}
 
 android {
     namespace = "com.ghost.smshelper"
@@ -42,6 +46,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        create("preview") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview" + (previewBuildNumber?.let { ".$it" } ?: "")
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
         }
     }
     compileOptions {

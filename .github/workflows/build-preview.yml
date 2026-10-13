@@ -1,0 +1,172 @@
+name: Build Preview APKs
+
+on:
+  push:
+    branches:
+      - 'preview/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  preview:
+    name: Verify and package Preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 配置 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 配置 Gradle 缓存
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 测试、Lint 与独立测试版构建
+        run: |
+          bash ./gradlew --no-daemon \
+            testPreviewUnitTest lintPreview assemblePreview assembleDebugAndroidTest \
+            -PappVersionName=2.1.0 \
+            "-PappVersionCode=$GITHUB_RUN_NUMBER" \
+            "-PpreviewBuildNumber=$GITHUB_RUN_NUMBER"
+
+      - name: 检查身份和版本，整理 arm64 与 universal APK
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          source = Path('app/build/outputs/apk/preview')
+          metadata = json.loads((source / 'output-metadata.json').read_text())
+          assert metadata['applicationId'] == 'com.ghost.smshelper.preview', '测试版必须使用独立包名'
+          version = f"2.1.0-preview.{os.environ['GITHUB_RUN_NUMBER']}"
+          destination = Path('preview-apks')
+          destination.mkdir()
+          selected = []
+          for apk in metadata['elements']:
+              assert apk['versionName'] == version, '测试版版本名不匹配'
+              assert apk['versionCode'] == int(os.environ['GITHUB_RUN_NUMBER']), '测试版版本码不匹配'
+              abi = next((item['value'] for item in apk['filters'] if item['filterType'] == 'ABI'), 'universal')
+              if abi not in {'arm64-v8a', 'universal'}:
+                  continue
+              target = destination / f'Smshelper-{version}-{abi}.apk'
+              shutil.copy2(source / apk['outputFile'], target)
+              selected.append(abi)
+          assert sorted(selected) == ['arm64-v8a', 'universal'], '缺少 arm64 或 universal APK'
+          (destination / 'build-info.json').write_text(json.dumps({
+              'applicationId': metadata['applicationId'],
+              'versionName': version,
+              'versionCode': int(os.environ['GITHUB_RUN_NUMBER']),
+              'commit': os.environ['GITHUB_SHA'],
+              'run': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'signing': 'temporary-preview-key',
+          }, ensure_ascii=False, indent=2) + '\n')
+          PY
+
+      - name: 可选专用测试签名（不使用正式发布密钥）
+        if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/heads/preview/')
+        env:
+          PREVIEW_KEYSTORE_BASE64: ${{ secrets.PREVIEW_KEYSTORE_BASE64 }}
+          PREVIEW_KEYSTORE_PASSWORD: ${{ secrets.PREVIEW_KEYSTORE_PASSWORD }}
+          PREVIEW_KEY_ALIAS: ${{ secrets.PREVIEW_KEY_ALIAS }}
+          PREVIEW_KEY_PASSWORD: ${{ secrets.PREVIEW_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PREVIEW_KEYSTORE_BASE64$PREVIEW_KEYSTORE_PASSWORD$PREVIEW_KEY_ALIAS$PREVIEW_KEY_PASSWORD" ]]; then
+            echo '未配置专用测试密钥；保留本次构建的临时测试签名。'
+            exit 0
+          fi
+          : "${PREVIEW_KEYSTORE_BASE64:?请完整配置四项 PREVIEW 签名 Secrets}"
+          : "${PREVIEW_KEYSTORE_PASSWORD:?请完整配置四项 PREVIEW 签名 Secrets}"
+          : "${PREVIEW_KEY_ALIAS:?请完整配置四项 PREVIEW 签名 Secrets}"
+          : "${PREVIEW_KEY_PASSWORD:?请完整配置四项 PREVIEW 签名 Secrets}"
+          keystore_path=$(mktemp "$RUNNER_TEMP/smshelper-preview.XXXXXX.jks")
+          trap 'rm -f "$keystore_path"' EXIT
+          printf '%s' "$PREVIEW_KEYSTORE_BASE64" | tr -d '\n\r' | base64 --decode > "$keystore_path"
+          apksigner=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)
+          test -x "$apksigner"
+          for apk in preview-apks/*.apk; do
+            "$apksigner" sign --ks "$keystore_path" \
+              --ks-key-alias "$PREVIEW_KEY_ALIAS" \
+              --ks-pass env:PREVIEW_KEYSTORE_PASSWORD \
+              --key-pass env:PREVIEW_KEY_PASSWORD \
+              "$apk"
+          done
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          info = Path('preview-apks/build-info.json')
+          data = json.loads(info.read_text())
+          data['signing'] = 'dedicated-preview-key'
+          info.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
+          PY
+
+      - name: 校验 APK 签名与生成校验和
+        run: |
+          set -euo pipefail
+          apksigner=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)
+          test -x "$apksigner"
+          for apk in preview-apks/*.apk; do
+            "$apksigner" verify --verbose --print-certs "$apk"
+          done
+          cd preview-apks
+          sha256sum ./*.apk > SHA256SUMS.txt
+
+      - name: 上传可直接安装的测试版 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smshelper-Preview-installable-APKs-${{ github.run_number }}
+          path: |
+            preview-apks/*.apk
+            preview-apks/build-info.json
+            preview-apks/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传测试与 Lint 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smshelper-Preview-Reports-${{ github.run_number }}
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 安装说明
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          data = json.loads(Path('preview-apks/build-info.json').read_text())
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+              output.write('### SmsHelper 测试版安装包\n\n')
+              output.write(f"版本：`{data['versionName']}`。\n\n")
+              output.write('下载本页的 **Smshelper-Preview-installable-APKs** 产物并解压；小米 13 安装文件名含 **arm64-v8a** 的 APK。其他架构可使用 universal。\n\n')
+              output.write('应用显示为 **SmsHelper 测试版**，与正式版并排安装，数据和权限各自独立。此工作流不发布 GitHub Release，也不使用正式发布签名。\n\n')
+              if data['signing'] == 'temporary-preview-key':
+                  output.write('本次使用临时测试签名。不同 CI 构建之间可能无法覆盖升级；先在测试版导出需要保留的数据，再卸载 **测试版** 并安装新包，正式版不受影响。首次安装无需配置任何签名 Secrets。\n\n')
+              else:
+                  output.write('本次使用专用测试签名；同一专用密钥签署的测试版可覆盖升级。\n\n')
+              output.write('自动检查包含 Preview 单元测试、Lint 和构建；Compose 设备测试仅编译，未宣称已在真机执行。\n')
+          PY
