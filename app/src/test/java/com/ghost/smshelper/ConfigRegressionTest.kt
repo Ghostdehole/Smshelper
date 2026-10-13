@@ -101,6 +101,10 @@ class ConfigRegressionTest {
         assertNotEquals("CMCC", CarrierIdentity.identifier("310", "00", "Foreign network"))
         assertNull(CarrierIdentity.identifier("310", "00", "CMCC"))
         assertNull(CarrierIdentity.identifier("460", "", ""))
+        assertEquals("CMCC", CarrierIdentity.identifier("", "", "中国移动"))
+        assertEquals("CUCC", CarrierIdentity.identifier("460", "", "中国联通"))
+        assertNull(CarrierIdentity.identifier("", "00", ""))
+        assertNull(CarrierIdentity.identifier("310", "00", "中国移动"))
         assertTrue(CarrierIdentity.matches("+86 10086", "10086"))
         assertTrue(CarrierIdentity.matches("008610086", "10086"))
         listOf("100860", "110086", "100", "", "Bank10086", "+86100860").forEach {

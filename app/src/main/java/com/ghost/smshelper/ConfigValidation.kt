@@ -99,17 +99,19 @@ object CarrierIdentity {
             "01", "06", "09" -> "CUCC"
             "03", "05", "11" -> "CTCC"
             "15" -> "CBN"
-            else -> carrierName.takeIf { it.isNotBlank() && it !in chineseNames }
+            else -> identifierFromName(carrierName)
         }
-        // The two-argument API has no MCC. Only explicit names are safe in that case.
-        if (mcc == null) return when (carrierName.trim()) {
+        // Missing home-network metadata may use an exact carrier name, never MNC alone.
+        if (mcc.isNullOrBlank() || mcc == "0") return identifierFromName(carrierName)
+        return carrierName.takeIf { it.isNotBlank() && it.trim() !in chineseNames }
+    }
+
+    private fun identifierFromName(carrierName: String): String? = when (carrierName.trim()) {
             "中国移动", "移动", "CMCC" -> "CMCC"
             "中国联通", "联通", "CUCC" -> "CUCC"
             "中国电信", "电信", "CTCC" -> "CTCC"
             "中国广电", "广电", "CBN" -> "CBN"
             else -> carrierName.takeIf { it.isNotBlank() }
-        }
-        return carrierName.takeIf { it.isNotBlank() && it !in chineseNames }
     }
 
     fun normalizeNumber(raw: String?): String? {
